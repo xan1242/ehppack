@@ -29,6 +29,7 @@ struct EHPFileEntry
 
 char FileNameBuffer[1024];
 char TempStringBuffer[1024];
+char TempStringBuffer2[1024];
 wchar_t MkDirPath[1024];
 
 char* OutputFileName; // used only in main
@@ -38,6 +39,33 @@ struct stat st = { 0 };
 // pack mode stuff
 char** FileDirectoryListing;
 unsigned int* PackerFileSizes;
+
+// Cutin Model stuff
+// cutin anim ptrs sizes are fixed per game
+#define TF6_ANIMPTRS_SIZE 0xAB4
+#define TF5_ANIMPTRS_SIZE 0x724
+#define TF4_ANIMPTRS_SIZE 0x3B0
+#define TF3_ANIMPTRS_SIZE 0xAD4
+#define TF2_ANIMPTRS_SIZE 0xA38
+#define TF1_ANIMPTRS_SIZE 0x5EC
+// basic definitions to avoid confusion later on
+#define TF6_ANIMPTRS 6
+#define TF5_ANIMPTRS 5
+#define TF4_ANIMPTRS 4
+#define TF3_ANIMPTRS 3
+#define TF2_ANIMPTRS 2
+#define TF1_ANIMPTRS 1
+#define UNK_ANIMPTRS 0
+
+bool bCutinModel = false;
+bool bHasAnimPtrs = false;
+bool bHasAnimEtcPtrs = false;
+unsigned int AnimCount = 0;
+unsigned int AnimPtrsSize = 0;
+unsigned int AnimPtrsMode = UNK_ANIMPTRS;
+unsigned int* AnimPointers = NULL;
+unsigned int AnimPtrsOffset = 0;
+unsigned int AnimEtcPtrsOffset = 0;
 
 #ifdef WIN32
 DWORD GetDirectoryListing(const char* FolderPath) // platform specific code, using Win32 here, GNU requires use of dirent which MSVC doesn't have
@@ -242,6 +270,13 @@ int EHPPack(const char* InPath, const char* OutFilename)
 		fseek(fout, FileEntry[i].FileOffset, SEEK_SET);
 		fwrite(FileBuffer, PackerFileSizes[i], 1, fout);
 		free(FileBuffer);
+
+		// cutin anim pointer check
+		if (bHasAnimPtrs && strcmp(FileDirectoryListing[i], "all-ptrs.txt") == 0)
+			AnimPtrsOffset = FileEntry[i].FileOffset;
+		if (bHasAnimEtcPtrs && strcmp(FileDirectoryListing[i], "alletc-ptrs.txt") == 0)
+			AnimEtcPtrsOffset = FileEntry[i].FileOffset;
+
 	}
 
 	// lastly add alignment bytes to the end to make it aligned by 0x10
@@ -258,6 +293,218 @@ int EHPPack(const char* InPath, const char* OutFilename)
 
 	fclose(fout);
 	
+	return 0;
+}
+
+int EHPAnimReference(const char* OutFilename, const char* InPtrsFile, bool bIsEtc)
+{
+	FILE* fout = fopen(OutFilename, "rb+");
+	FILE* fptrs = fopen(InPtrsFile, "rb");
+	unsigned int AnimIndex = 0;
+
+	if (!fout)
+	{
+		printf("ERROR: Can't open file %s for read/write!\n", OutFilename);
+		perror("ERROR");
+		return -1;
+	}
+
+	if (!fptrs)
+	{
+		printf("ERROR: Can't open file %s for reading!\n", InPtrsFile);
+		perror("ERROR");
+		return -1;
+	}
+
+	// read the version from the file itself first to determine the size of the array
+	fscanf(fptrs, "TF%d\n", &AnimPtrsMode);
+
+	switch (AnimPtrsMode)
+	{
+	case TF6_ANIMPTRS:
+		AnimPtrsSize = TF6_ANIMPTRS_SIZE;
+		break;
+	case TF5_ANIMPTRS:
+		AnimPtrsSize = TF5_ANIMPTRS_SIZE;
+		break;
+	case TF4_ANIMPTRS:
+		AnimPtrsSize = TF4_ANIMPTRS_SIZE;
+		break;
+	case TF3_ANIMPTRS:
+		AnimPtrsSize = TF3_ANIMPTRS_SIZE;
+		break;
+	case TF2_ANIMPTRS:
+		AnimPtrsSize = TF2_ANIMPTRS_SIZE;
+		break;
+	case TF1_ANIMPTRS:
+		AnimPtrsSize = TF1_ANIMPTRS_SIZE;
+		break;
+	default:
+		AnimPtrsSize = 0;
+		break;
+	}
+	// init array
+	AnimCount = AnimPtrsSize / 4;
+	AnimPointers = (unsigned int*)calloc(AnimCount, sizeof(unsigned int));
+	AnimPointers[AnimCount - 1] = 0xFFFFFFFF;
+
+	// get pointers
+	while (!feof(fptrs))
+	{
+		// parse string from txt
+		if (fgets(TempStringBuffer, 1024, fptrs))
+		{
+			if (TempStringBuffer[strlen(TempStringBuffer) - 1] == '\n')
+				TempStringBuffer[strlen(TempStringBuffer) - 1] = 0;
+			sscanf(TempStringBuffer, "%X = %s", &AnimIndex, TempStringBuffer2);
+
+
+			// before searching the EHP, check if the file even exists!
+			strcpy(FileNameBuffer, OutFilename);
+			*strrchr(FileNameBuffer, '.') = 0;
+			sprintf(TempStringBuffer, "%s\\%s", FileNameBuffer, TempStringBuffer2);
+			if (stat(TempStringBuffer, &st))
+			{
+				printf("ERROR: Can't find %s during animation referencing!\n", TempStringBuffer);
+				return -1;
+			}
+
+			for (unsigned int j = 0; j < MainHeader.FileCount; j++)
+			{
+				// get EHP filename
+				fseek(fout, FileEntry[j].FileInfoPointer, SEEK_SET);
+				fgets(FileNameBuffer, 1024, fout);
+
+				// check if filename matches the parsed txt
+				if (strcmp(FileNameBuffer, TempStringBuffer2) == 0)
+				{
+					printf("Anim[%X] assigned to: %s (@ 0x%x)\n", AnimIndex, FileNameBuffer, FileEntry[j].FileOffset);
+					AnimPointers[AnimIndex] = FileEntry[j].FileOffset;
+					break;
+				}
+			}
+		}
+	}
+	
+	// write array to EHP's appropriate location
+	if (bIsEtc)
+	{
+		fseek(fout, AnimEtcPtrsOffset, SEEK_SET);
+		fwrite(AnimPointers, sizeof(unsigned int), AnimCount, fout);
+	}
+	else
+	{
+		fseek(fout, AnimPtrsOffset, SEEK_SET);
+		fwrite(AnimPointers, sizeof(unsigned int), AnimCount, fout);
+	}
+
+	free(AnimPointers);
+	fclose(fptrs);
+	fclose(fout);
+
+	return 0;
+}
+
+int EHPDereference(const char* InFilename, const char* InPtrsFile, const char* OutFilename)
+{
+	FILE *fin = fopen(InFilename, "rb");
+	FILE *fptrs = fopen(InPtrsFile, "rb");
+	FILE* fout = fopen(OutFilename, "wb");
+	//int ptrchk = 0;
+	//int counter = 1;
+	unsigned int* LocalAnimPointers = NULL;
+
+
+	if (!fin)
+	{
+		printf("ERROR: Can't open file %s for reading!\n", InFilename);
+		perror("ERROR");
+		return -1;
+	}
+
+	if (!fptrs)
+	{
+		printf("ERROR: Can't open file %s for reading!\n", InPtrsFile);
+		perror("ERROR");
+		return -1;
+	}
+
+	// read main header
+	fread(&MainHeader, sizeof(EHPHead), 1, fin);
+
+	// wrong magic error handling
+	if (MainHeader.Magic != EHP_MAGIC)
+	{
+		printf("ERROR: Wrong file magic! File does not start with EHP!\nFile is either corrupt or in wrong format.\n");
+		return -1;
+	}
+
+	if (MainHeader.Magic2 != EHP_MAGIC2)
+	{
+		printf("WARNING: Wrong file magic (2)! Second magic isn't \"NOT \"!\n");
+	}
+
+	// read file entries
+	FileEntry = (EHPFileEntry*)calloc(MainHeader.FileCount, sizeof(EHPFileEntry));
+	fread(FileEntry, sizeof(EHPFileEntry), MainHeader.FileCount, fin);
+
+	// get ptrs file size
+	if (stat(InPtrsFile, &st))
+	{
+		printf("ERROR: Can't find %s during dereferencing!\n", InPtrsFile);
+		return -1;
+	}
+
+	LocalAnimPointers = (unsigned int*)malloc(st.st_size);
+	AnimCount = st.st_size / 4;
+
+	fread(LocalAnimPointers, sizeof(char), st.st_size, fptrs);
+	fclose(fptrs);
+
+	// start file dereferencing
+
+	if (bHasAnimPtrs || bHasAnimEtcPtrs)
+		fprintf(fout, "TF%d\n", AnimPtrsMode);
+
+	for (unsigned int i = 0; i < AnimCount; i++)
+	{
+		for (unsigned int j = 0; j < MainHeader.FileCount; j++)
+		{
+			if (FileEntry[j].FileOffset == LocalAnimPointers[i])
+			{
+				// get filename
+				fseek(fin, FileEntry[j].FileInfoPointer, SEEK_SET);
+				fgets(FileNameBuffer, 1024, fin);
+				fprintf(fout, "%X = %s\n", i, FileNameBuffer);
+				//printf("%d (file ptr: %X ingame ptr: %X): Pointer: %.8X\tFile: %s\n", counter, ftell(fptrs) - 4, (ftell(fptrs) - 4) / 4, ptrchk, FileNameBuffer);
+			}
+		}
+	}
+
+	// start file dereferencing
+	//while (!feof(fptrs))
+	//{
+	//	fread(&ptrchk, sizeof(int), 1, fptrs);
+	//	if (ptrchk == -1)
+	//		break;
+	//	for (unsigned int i = 0; i < MainHeader.FileCount; i++)
+	//	{
+	//		if (FileEntry[i].FileOffset == ptrchk)
+	//		{
+	//			// get filename
+	//			fseek(fin, FileEntry[i].FileInfoPointer, SEEK_SET);
+	//			fgets(FileNameBuffer, 1024, fin);
+	//
+	//			printf("%d (file ptr: %X ingame ptr: %X): Pointer: %.8X\tFile: %s\n", counter, ftell(fptrs) - 4, (ftell(fptrs) - 4) / 4, ptrchk, FileNameBuffer);
+	//			counter++;
+	//		}
+	//	}
+	//}
+
+	free(LocalAnimPointers);
+	fclose(fout);
+	fclose(fin);
+
 	return 0;
 }
 
@@ -301,11 +548,56 @@ int EHPExtract(const char* InFilename, const char* OutPath)
 		// get filename
 		fseek(fin, FileEntry[i].FileInfoPointer, SEEK_SET);
 		fgets(FileNameBuffer, 1024, fin);
-		
+
 		// get filesize
 		FilenameSize = strlen(FileNameBuffer) + 1; 
 		fseek(fin, FileEntry[i].FileInfoPointer + FilenameSize, SEEK_SET); // go to the end of the string, there lies the filesize
 		fread(&FileSize, sizeof(int), 1, fin);
+
+		// detect cutin anim pointers file
+		if (strcmp(FileNameBuffer, "all-ptrs.txt") == 0)
+		{
+			printf("INFO: Will generate anim definition file!\n");
+			bHasAnimPtrs = true;
+			AnimPtrsSize = FileSize;
+
+			switch (FileSize)
+			{
+			case TF6_ANIMPTRS_SIZE:
+				printf("INFO: Detected Tag Force 6!\n");
+				AnimPtrsMode = TF6_ANIMPTRS;
+				break;
+			case TF5_ANIMPTRS_SIZE:
+				printf("INFO: Detected Tag Force 5!\n");
+				AnimPtrsMode = TF5_ANIMPTRS;
+				break;
+			case TF4_ANIMPTRS_SIZE:
+				printf("INFO: Detected Tag Force 4!\n");
+				AnimPtrsMode = TF4_ANIMPTRS;
+				break;
+			case TF3_ANIMPTRS_SIZE:
+				printf("INFO: Detected Tag Force 3!\n");
+				AnimPtrsMode = TF3_ANIMPTRS;
+				break;
+			case TF2_ANIMPTRS_SIZE:
+				printf("INFO: Detected Tag Force 2!\n");
+				AnimPtrsMode = TF2_ANIMPTRS;
+				break;
+			case TF1_ANIMPTRS_SIZE:
+				printf("INFO: Detected Tag Force 1!\n");
+				AnimPtrsMode = TF1_ANIMPTRS;
+				break;
+			default:
+				printf("INFO: Anim-ptrs game unknown!\n");
+				break;
+			}
+		}
+
+		if (strcmp(FileNameBuffer, "alletc-ptrs.txt") == 0)
+		{
+			printf("INFO: Will generate anim-etc definition file!\n");
+			bHasAnimEtcPtrs = true;
+		}
 
 		// create a buffer & copy the file to buffer
 		FileBuffer = malloc(FileSize);
@@ -346,12 +638,15 @@ int EHPExtract(const char* InFilename, const char* OutPath)
 
 int main(int argc, char *argv[])
 {
+	char* CharPatchPoint = NULL;
 	printf("Yu-Gi-Oh! Tag Force EHP Tool\n");
+
 
 	if (argc < 2)
 	{
 		printf("USAGE (extract): %s InFileName [OutFolder]\n", argv[0]);
 		printf("USAGE (pack): %s -p InFolder [OutFileName]\n", argv[0]);
+		printf("USAGE (dereference): %s -p InFileName InPtrsFile OutFileName\n", argv[0]);
 		printf("If the optional (in []) parameter isn't specified, it'll reuse the input name.\n");
 		return -1;
 	}
@@ -368,9 +663,52 @@ int main(int argc, char *argv[])
 		else
 			OutputFileName = argv[3];
 
-		return EHPPack(argv[2], OutputFileName);
+		strcpy(FileNameBuffer, OutputFileName);
+		*strrchr(FileNameBuffer, '.') = 0;
+		strcat(FileNameBuffer, "_anim-ptrs.txt");
+		if (!(stat(FileNameBuffer, &st)))
+		{
+			printf("Detected animation pointers!\n");
+			bHasAnimPtrs = true;
+		}
+
+		strcpy(FileNameBuffer, OutputFileName);
+		*strrchr(FileNameBuffer, '.') = 0;
+		strcat(FileNameBuffer, "_animetc-ptrs.txt");
+		if (!(stat(FileNameBuffer, &st)))
+		{
+			printf("Detected animation-etc pointers!\n");
+			bHasAnimEtcPtrs = true;
+		}
+		EHPPack(argv[2], OutputFileName);
+
+		if (bHasAnimPtrs)
+		{
+			printf("Writing animation pointers to EHP!\n");
+			strcpy(FileNameBuffer, OutputFileName);
+			*strrchr(FileNameBuffer, '.') = 0;
+			strcat(FileNameBuffer, "_anim-ptrs.txt");
+			EHPAnimReference(OutputFileName, FileNameBuffer, false);
+		}
+
+		if (bHasAnimEtcPtrs)
+		{
+			printf("Writing animation-etc pointers to EHP!\n");
+			strcpy(FileNameBuffer, OutputFileName);
+			*strrchr(FileNameBuffer, '.') = 0;
+			strcat(FileNameBuffer, "_animetc-ptrs.txt");
+			EHPAnimReference(OutputFileName, FileNameBuffer, true);
+		}
+
+		return 0;
 	}
 
+
+	if (argv[1][0] == '-' && argv[1][1] == 'd') // Dereference mode
+	{
+		printf("Dereference mode\n");
+		return EHPDereference(argv[2], argv[3], argv[4]);
+	}
 	
 	if (argc == 2) // Extraction mode
 	{
@@ -384,6 +722,21 @@ int main(int argc, char *argv[])
 	else
 		OutputFileName = argv[2];
 
-    return EHPExtract(argv[1], OutputFileName);
+	EHPExtract(argv[1], OutputFileName);
+	if (bHasAnimPtrs)
+	{
+		sprintf(TempStringBuffer, "%s\\%s", OutputFileName, "all-ptrs.txt");
+		sprintf(FileNameBuffer, "%s_anim-ptrs.txt", OutputFileName);
+		EHPDereference(argv[1], TempStringBuffer, FileNameBuffer);
+	}
+
+	if (bHasAnimEtcPtrs)
+	{
+		sprintf(TempStringBuffer, "%s\\%s", OutputFileName, "alletc-ptrs.txt");
+		sprintf(FileNameBuffer, "%s_animetc-ptrs.txt", OutputFileName);
+		EHPDereference(argv[1], TempStringBuffer, FileNameBuffer);
+	}
+
+	return 0;
 }
 
