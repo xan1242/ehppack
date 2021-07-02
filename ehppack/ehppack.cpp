@@ -8,6 +8,7 @@
 #ifdef WIN32
 #include <windows.h>
 #include <strsafe.h>
+#include <ctype.h>
 #endif
 
 #define EHP_MAGIC 0x03504845
@@ -15,9 +16,9 @@
 
 struct EHPHead
 {
-	int Magic; // 0x03504845 (EHP 0x3)
+	int Magic; // 0x03504845 (EHP 0x3) - game checks only the first 3 bytes for the magic
 	int TotalFileSize;
-	int Magic2; // 0x20544F4E (NOT )
+	int Magic2; // 0x20544F4E (NOT ) - this gets changed in memory to "BIND" when the file is in use
 	int FileCount;
 }MainHeader = { EHP_MAGIC, 0, EHP_MAGIC2, 0 };
 
@@ -30,6 +31,7 @@ struct EHPFileEntry
 char FileNameBuffer[1024];
 char TempStringBuffer[1024];
 char TempStringBuffer2[1024];
+char TempStringBuffer3[1024];
 wchar_t MkDirPath[1024];
 
 char* OutputFileName; // used only in main
@@ -41,13 +43,26 @@ char** FileDirectoryListing;
 unsigned int* PackerFileSizes;
 
 // Cutin Model stuff
+// _kao-ptrs.txt = contains a pointer to the mini_bu GIM file in the EHP (only seen in TF1)
+// _info-ptrs.txt = contains pointers to the TMS, also optionally to filename-ptrs and filenameetc-ptrs if they exist (the filename-ptrs stuff only seen in TF1)
+// all-ptrs.txt = pointers to all animations
+// alletc-ptrs.txt = pointers to all-etc animations
+// each game seems to have fixed indexes for which animation goes where
+
 // cutin anim ptrs sizes are fixed per game
+// used in: all-ptrs.txt, alletc-ptrs.txt
 #define TF6_ANIMPTRS_SIZE 0xAB4
 #define TF5_ANIMPTRS_SIZE 0x724
 #define TF4_ANIMPTRS_SIZE 0x3B0
 #define TF3_ANIMPTRS_SIZE 0xAD4
 #define TF2_ANIMPTRS_SIZE 0xA38
 #define TF1_ANIMPTRS_SIZE 0x5EC
+
+// TF1 extra stuff
+// used in filename-ptrs.txt, example: cutin_jyudai01-ptrs.txt
+// currently untouched by the app, doesn't seem very important to the game as it works without that file anyways...
+#define TF1_FILENAMEPTRS_SIZE 0x374 
+
 // basic definitions to avoid confusion later on
 #define TF6_ANIMPTRS 6
 #define TF5_ANIMPTRS 5
@@ -57,7 +72,6 @@ unsigned int* PackerFileSizes;
 #define TF1_ANIMPTRS 1
 #define UNK_ANIMPTRS 0
 
-bool bCutinModel = false;
 bool bHasAnimPtrs = false;
 bool bHasAnimEtcPtrs = false;
 unsigned int AnimCount = 0;
@@ -67,8 +81,68 @@ unsigned int* AnimPointers = NULL;
 unsigned int AnimPtrsOffset = 0;
 unsigned int AnimEtcPtrsOffset = 0;
 
+// these pointer defs are updated differently than anim ones
+// due to their simplicity, they are updated automatically by the application after packing finishes
+bool bHasInfoPtrs = false;
+bool bHasKaoPtrs = false;
+bool bHasFilenamePtrs = false;
+bool bHasFilenameEtcPtrs = false;
+unsigned int InfoPtrsIndex = 0;
+unsigned int KaoPtrsIndex = 0;
+unsigned int FilenamePtrsIndex = 0;
+unsigned int FilenameEtcPtrsIndex = 0;
+
+
+// dir list sorting - IMPORTANT FOR MODELS - files with '_' character in front of the filename go after numeric names but before alphabetic ones!
+// this is NOT a sorting algorithm (per se)!
+// the rest should be handled correctly by the API
+int SortDirList()
+{
+	int SortedCounter = 0;
+	char** FileDirectoryListing_Temp = (char**)calloc(MainHeader.FileCount, sizeof(char*));
+	bool* SortedFlags = (bool*)calloc(MainHeader.FileCount, sizeof(bool));
+
+	// first search for numeric ones and put them to the front
+	for (unsigned int i = 0; i < MainHeader.FileCount; i++)
+	{
+		if (isdigit(FileDirectoryListing[i][0]))
+		{
+			FileDirectoryListing_Temp[SortedCounter] = FileDirectoryListing[i];
+			SortedFlags[i] = true;
+			SortedCounter++;
+		}
+	}
+
+	// then search for '_' char ones and put them after numeric ones
+	for (unsigned int i = 0; i < MainHeader.FileCount; i++)
+	{
+		if (FileDirectoryListing[i][0] == '_')
+		{
+			FileDirectoryListing_Temp[SortedCounter] = FileDirectoryListing[i];
+			SortedFlags[i] = true;
+			SortedCounter++;
+		}
+	}
+
+	// then lump all the other ones together
+	for (unsigned int i = 0; i < MainHeader.FileCount; i++)
+	{
+		if (SortedFlags[i] == false)
+		{
+			FileDirectoryListing_Temp[SortedCounter] = FileDirectoryListing[i];
+			SortedCounter++;
+		}
+	}
+
+	memcpy(FileDirectoryListing, FileDirectoryListing_Temp, sizeof(char*) * MainHeader.FileCount);
+
+	free(SortedFlags);
+	free(FileDirectoryListing_Temp);
+	return 0;
+}
+
 #ifdef WIN32
-DWORD GetDirectoryListing(const char* FolderPath) // platform specific code, using Win32 here, GNU requires use of dirent which MSVC doesn't have
+DWORD GetDirectoryListing(const char* FolderPath) // platform specific code, using Win32 here, GNU requires use of dirent which MSVC doesn't have -- TODO - make crossplat variant
 {
 	WIN32_FIND_DATA ffd = { 0 };
 	TCHAR  szDir[MAX_PATH];
@@ -227,8 +301,14 @@ int EHPPack(const char* InPath, const char* OutFilename)
 		return -1;
 	}
 
+	// generate the ptrs names for later checking
+	sprintf(TempStringBuffer2, "%s-ptrs.txt", InPath);
+	sprintf(TempStringBuffer3, "%setc-ptrs.txt", InPath);
+
 	// parse the directory listing (one level deep), also writes to the MainHeader.FileCount
 	GetDirectoryListing(InPath);
+	// sort the dir list due to models
+	SortDirList();
 	// pre-calculate the final file size and prepare file entries
 	MainHeader.TotalFileSize = PreCalcFinalSize(InPath);
 
@@ -277,6 +357,27 @@ int EHPPack(const char* InPath, const char* OutFilename)
 		if (bHasAnimEtcPtrs && strcmp(FileDirectoryListing[i], "alletc-ptrs.txt") == 0)
 			AnimEtcPtrsOffset = FileEntry[i].FileOffset;
 
+		// cutin other pointer check
+		if (!bHasInfoPtrs && strcmp(FileDirectoryListing[i], "_info-ptrs.txt") == 0)
+		{
+			bHasInfoPtrs = true;
+			InfoPtrsIndex = i;
+		}
+		if (!bHasKaoPtrs && strcmp(FileDirectoryListing[i], "_kao-ptrs.txt") == 0)
+		{
+			bHasKaoPtrs = true;
+			KaoPtrsIndex = i;
+		}
+		if (!bHasFilenamePtrs && strcmp(FileDirectoryListing[i], TempStringBuffer2) == 0)
+		{
+			bHasFilenamePtrs = true;
+			FilenamePtrsIndex = i;
+		}
+		if (!bHasFilenameEtcPtrs && strcmp(FileDirectoryListing[i], TempStringBuffer3) == 0)
+		{
+			bHasFilenameEtcPtrs = true;
+			FilenameEtcPtrsIndex = i;
+		}
 	}
 
 	// lastly add alignment bytes to the end to make it aligned by 0x10
@@ -293,6 +394,76 @@ int EHPPack(const char* InPath, const char* OutFilename)
 
 	fclose(fout);
 	
+	return 0;
+}
+
+int EHPCutin_UpdateInfoPtrs(const char* OutFilename)
+{
+	FILE* fout = fopen(OutFilename, "rb+");
+
+	bool bFoundTMSFile = false;
+
+	if (!fout)
+	{
+		printf("ERROR: Can't open file %s for writing!\n", OutFilename);
+		perror("ERROR");
+		return -1;
+	}
+
+	// search for & write the TMS index (and optionally the filename ptrs thingy)
+	for (unsigned int i = 0; i < MainHeader.FileCount; i++)
+	{
+		if (strcmp(strrchr(FileDirectoryListing[i], '.'), ".tms") == 0)
+		{
+			bFoundTMSFile = true;
+			fseek(fout, FileEntry[InfoPtrsIndex].FileOffset, SEEK_SET);
+			fwrite(&FileEntry[i].FileOffset, sizeof(unsigned int), 1, fout);
+			if (bHasFilenamePtrs)
+				fwrite(&FileEntry[FilenamePtrsIndex].FileOffset, sizeof(unsigned int), 1, fout);
+			if (bHasFilenameEtcPtrs)
+				fwrite(&FileEntry[FilenameEtcPtrsIndex].FileOffset, sizeof(unsigned int), 1, fout);
+			break;
+		}
+	}
+
+	if (!bFoundTMSFile)
+		printf("WARNING: _info-ptrs.txt was not updated - accompanying .tms file is missing!\n");
+
+	fclose(fout);
+
+	return 0;
+}
+
+int EHPCutin_UpdateKaoPtrs(const char* OutFilename)
+{
+	FILE* fout = fopen(OutFilename, "rb+");
+
+	bool bFoundMiniBu = false;
+
+	if (!fout)
+	{
+		printf("ERROR: Can't open file %s for writing!\n", OutFilename);
+		perror("ERROR");
+		return -1;
+	}
+
+	// search for & write the mini_bu
+	for (unsigned int i = 0; i < MainHeader.FileCount; i++)
+	{
+		if (strncmp(FileDirectoryListing[i], "mini_bu", 7) == 0)
+		{
+			bFoundMiniBu = true;
+			fseek(fout, FileEntry[KaoPtrsIndex].FileOffset, SEEK_SET);
+			fwrite(&FileEntry[i].FileOffset, sizeof(unsigned int), 1, fout);
+			break;
+		}
+	}
+
+	if (!bFoundMiniBu)
+		printf("WARNING: _kao-ptrs.txt was not updated - mini_bu texture is missing!\n");
+
+	fclose(fout);
+
 	return 0;
 }
 
@@ -599,6 +770,7 @@ int EHPExtract(const char* InFilename, const char* OutPath)
 			bHasAnimEtcPtrs = true;
 		}
 
+
 		// create a buffer & copy the file to buffer
 		FileBuffer = malloc(FileSize);
 		fseek(fin, FileEntry[i].FileOffset, SEEK_SET);
@@ -646,7 +818,7 @@ int main(int argc, char *argv[])
 	{
 		printf("USAGE (extract): %s InFileName [OutFolder]\n", argv[0]);
 		printf("USAGE (pack): %s -p InFolder [OutFileName]\n", argv[0]);
-		printf("USAGE (dereference): %s -p InFileName InPtrsFile OutFileName\n", argv[0]);
+		printf("USAGE (dereference): %s -d InFileName InPtrsFile OutFileName\n", argv[0]);
 		printf("If the optional (in []) parameter isn't specified, it'll reuse the input name.\n");
 		return -1;
 	}
@@ -699,6 +871,20 @@ int main(int argc, char *argv[])
 			strcat(FileNameBuffer, "_animetc-ptrs.txt");
 			EHPAnimReference(OutputFileName, FileNameBuffer, true);
 		}
+
+		if (bHasInfoPtrs)
+		{
+			printf("Writing _info-ptrs.txt to EHP!\n");
+			EHPCutin_UpdateInfoPtrs(OutputFileName);
+		}
+
+		if (bHasKaoPtrs)
+		{
+			printf("Writing _kao-ptrs.txt to EHP!\n");
+			EHPCutin_UpdateKaoPtrs(OutputFileName);
+		}
+
+		// TODO: if neccessary, update the filename-ptrs.txt file too, it's used in TF1 only...
 
 		return 0;
 	}
