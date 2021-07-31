@@ -1,9 +1,17 @@
-// Konami Yu-Gi-Oh! Tag Force EHP packer/unpacker tool
+// Konami Yu-Gi-Oh! Tag Force EHP/EhFolder packer/unpacker tool
 // by Xan
+// TODO: add EhFolder include.txt support (file inclusion/linking through txt file)
+// TODO: ".efs" support? No idea what it is used for but the official tool supports it... It also requires efscrcmp.exe which we don't even have so there's that.
 
 #include "stdafx.h"
 #include <stdlib.h>
 #include <string.h>
+
+// C++
+#include <iostream>
+#include <string>
+#include <vector>
+#include <algorithm>
 
 #ifdef WIN32
 #include <windows.h>
@@ -94,51 +102,75 @@ unsigned int FilenameEtcPtrsIndex = 0;
 
 
 // dir list sorting - IMPORTANT FOR MODELS - files with '_' character in front of the filename go after numeric names but before alphabetic ones!
-// this is NOT a sorting algorithm (per se)!
-// the rest should be handled correctly by the API
+// credit to Philip Nicoletti for insensitive algo
+namespace
+{
+	struct case_insensitive_less : public std::binary_function< char, char, bool >
+	{
+		bool operator () (char x, char y) const
+		{
+			if (y == '_') // '_' char takes precedence over the alphabet but not over numbers, hack to override the character
+				y = 0x40;
+			if (x == '_')
+				x = 0x40;
+			return toupper(static_cast<unsigned char>(x)) <
+				toupper(static_cast<unsigned char>(y));
+		}
+	};
+
+	bool NoCaseLess(const std::string& a, const std::string& b)
+	{
+		return std::lexicographical_compare(a.begin(), a.end(),
+			b.begin(), b.end(), case_insensitive_less());
+	}
+
+}
+
 int SortDirList()
 {
-	int SortedCounter = 0;
-	char** FileDirectoryListing_Temp = (char**)calloc(MainHeader.FileCount, sizeof(char*));
-	bool* SortedFlags = (bool*)calloc(MainHeader.FileCount, sizeof(bool));
+	// i give up, i'll use C++ here to fix the sorting 
+	// (maybe even reconstruct the entire string system with C++ later on, but for now, only sorting and nothing more)
 
-	// first search for numeric ones and put them to the front
+	std::vector<std::string> sorter;
+	int CppSorterCounter = 0;
+
 	for (unsigned int i = 0; i < MainHeader.FileCount; i++)
 	{
-		if (isdigit(FileDirectoryListing[i][0]))
-		{
-			FileDirectoryListing_Temp[SortedCounter] = FileDirectoryListing[i];
-			SortedFlags[i] = true;
-			SortedCounter++;
-		}
+		sorter.push_back(FileDirectoryListing[i]);
+		// release strings from memory to assign new ones later
+		free(FileDirectoryListing[i]);
 	}
 
-	// then search for '_' char ones and put them after numeric ones
-	for (unsigned int i = 0; i < MainHeader.FileCount; i++)
+	std::sort(sorter.begin(), sorter.end(), NoCaseLess);
+
+	// C++ newbie here, stealing code from:
+	// https://stackoverflow.com/questions/10750057/how-do-i-print-out-the-contents-of-a-vector
+	for (std::vector<std::string>::const_iterator i = sorter.begin(); i != sorter.end(); ++i)
 	{
-		if (FileDirectoryListing[i][0] == '_')
-		{
-			FileDirectoryListing_Temp[SortedCounter] = FileDirectoryListing[i];
-			SortedFlags[i] = true;
-			SortedCounter++;
-		}
+		FileDirectoryListing[CppSorterCounter] = (char*)calloc(i->length() + 1, sizeof(char));
+		strcpy(FileDirectoryListing[CppSorterCounter], i->c_str());
+		CppSorterCounter++;
 	}
 
-	// then lump all the other ones together
-	for (unsigned int i = 0; i < MainHeader.FileCount; i++)
-	{
-		if (SortedFlags[i] == false)
-		{
-			FileDirectoryListing_Temp[SortedCounter] = FileDirectoryListing[i];
-			SortedCounter++;
-		}
-	}
-
-	memcpy(FileDirectoryListing, FileDirectoryListing_Temp, sizeof(char*) * MainHeader.FileCount);
-
-	free(SortedFlags);
-	free(FileDirectoryListing_Temp);
 	return 0;
+}
+
+unsigned int CountLinesInFile(const char* InFilename)
+{
+	FILE* finput = fopen(InFilename, "r");
+	unsigned long int OldOffset = ftell(finput);
+	unsigned int LineCount = 0;
+	char ReadCh;
+
+	while (!feof(finput))
+	{
+		ReadCh = fgetc(finput);
+		if (ReadCh == '\n')
+			LineCount++;
+	}
+	
+	fclose(finput);
+	return LineCount;
 }
 
 #ifdef WIN32
@@ -224,13 +256,14 @@ void GetDirectoryListing(const char* FolderPath)
 #endif
 
 // precalc and prepare file entries
-int PreCalcFinalSize(const char* InPath)
+int PreCalcFinalSize(const char* InPath, bool bOfficial)
 {
 	int result = sizeof(EHPHead) + (sizeof(EHPFileEntry) * (MainHeader.FileCount + 1)) + (MainHeader.FileCount * sizeof(int)); // Main Header size + (entry * (count + null terminator)) + filesize integers
 	int FileInfoPoint = sizeof(EHPHead) + (sizeof(EHPFileEntry) * (MainHeader.FileCount + 1)); // Main Header size + (entry * (count + null terminator))
 
 	unsigned int AlignedFileStart;
-	unsigned int AlignmentZeroes;
+
+	char* PadNamePoint = NULL;
 	
 	FileEntry = (EHPFileEntry*)calloc(MainHeader.FileCount + 1, sizeof(EHPFileEntry));
 
@@ -267,18 +300,33 @@ int PreCalcFinalSize(const char* InPath)
 			printf("ERROR: Can't find %s during size calculation!\n", TempStringBuffer);
 			return -1;
 		}
-		PackerFileSizes[i] = st.st_size;
-		if (st.st_size & 0xF)
+
+		if (bOfficial)
+			PadNamePoint = strchr(FileDirectoryListing[i], '#');
+
+		if (bOfficial && strstr(FileDirectoryListing[i], "-ptrs.txt")) // ptrs files get turned into binary files later
+			PackerFileSizes[i] = CountLinesInFile(TempStringBuffer) * sizeof(int);
+		else if (PadNamePoint) // txt files with # are padding files which in their name are followed by a size in hex format
+			sscanf(PadNamePoint, "#%x.txt", &PackerFileSizes[i]);
+		else
+			PackerFileSizes[i] = st.st_size;
+
+		if (PackerFileSizes[i] & 0xF)
 		{
-			AlignedFileStart = (st.st_size + 0x10) & 0xFFFFFFF0;
-			printf("Size of %s: 0x%x (aligned to: 0x%x)\n", TempStringBuffer, st.st_size, AlignedFileStart);
+			AlignedFileStart = (PackerFileSizes[i] + 0x10) & 0xFFFFFFF0;
+			printf("Size of %s: 0x%x (aligned to: 0x%x)\n", TempStringBuffer, PackerFileSizes[i], AlignedFileStart);
 			result += AlignedFileStart;
 		}
 		else
 		{
-			printf("Size of %s: 0x%x\n", TempStringBuffer, st.st_size);
+			if (PadNamePoint)
+				printf("Padding %s: 0x%x\n", TempStringBuffer, PackerFileSizes[i]);
+			else
+				printf("Size of %s: 0x%x\n", TempStringBuffer, PackerFileSizes[i]);
+
 			result += st.st_size;
 		}
+		PadNamePoint = NULL;
 	}
 
 	printf("Total file size: 0x%x bytes\n", result);
@@ -286,13 +334,14 @@ int PreCalcFinalSize(const char* InPath)
 	return result;
 }
 
-int EHPPack(const char* InPath, const char* OutFilename)
+int EHPPack(const char* InPath, const char* OutFilename, bool bOfficial)
 {
 	FILE *fin = NULL;
 	// open the output file
 	FILE *fout = fopen(OutFilename, "wb");
 	void* FileBuffer = NULL;
 	int AlignmentBytes = 0;
+	char* PadNamePoint = NULL;
 
 	if (!fout)
 	{
@@ -301,16 +350,19 @@ int EHPPack(const char* InPath, const char* OutFilename)
 		return -1;
 	}
 
-	// generate the ptrs names for later checking
-	sprintf(TempStringBuffer2, "%s-ptrs.txt", InPath);
-	sprintf(TempStringBuffer3, "%setc-ptrs.txt", InPath);
+	if (!bOfficial)
+	{
+		// generate the ptrs names for later checking
+		sprintf(TempStringBuffer2, "%s-ptrs.txt", InPath);
+		sprintf(TempStringBuffer3, "%setc-ptrs.txt", InPath);
+	}
 
 	// parse the directory listing (one level deep), also writes to the MainHeader.FileCount
 	GetDirectoryListing(InPath);
 	// sort the dir list due to models
 	SortDirList();
 	// pre-calculate the final file size and prepare file entries
-	MainHeader.TotalFileSize = PreCalcFinalSize(InPath);
+	MainHeader.TotalFileSize = PreCalcFinalSize(InPath, bOfficial);
 
 	// start the writing process
 	// write header information (16 bytes)
@@ -332,55 +384,64 @@ int EHPPack(const char* InPath, const char* OutFilename)
 	// copy file data to the file
 	for (unsigned int i = 0; i < MainHeader.FileCount; i++)
 	{
-		// open the file and copy it to buffer
-		sprintf(TempStringBuffer, "%s\\%s", InPath, FileDirectoryListing[i]);
-		fin = fopen(TempStringBuffer, "rb");
-		printf("Writing: %s @ 0x%x (size: 0x%x)\n", TempStringBuffer, FileEntry[i].FileOffset, PackerFileSizes[i]);
-		if (!fin)
-		{
-			printf("ERROR: Can't open file %s for reading!\n", TempStringBuffer);
-			perror("ERROR");
-			return -1;
-		}
-		FileBuffer = malloc(PackerFileSizes[i]);
-		fread(FileBuffer, PackerFileSizes[i], 1, fin);
-		fclose(fin);
+		if (bOfficial)
+			PadNamePoint = strchr(FileDirectoryListing[i], '#');
 
-		// seek to the correct spot in the file and write there
-		fseek(fout, FileEntry[i].FileOffset, SEEK_SET);
-		fwrite(FileBuffer, PackerFileSizes[i], 1, fout);
-		free(FileBuffer);
+		if (!(bOfficial && (strstr(FileDirectoryListing[i], "-ptrs.txt")) || strchr(FileDirectoryListing[i], '#'))) // skip writing ptrs file and update it later, also skip padding files entirely
+		{
+			// open the file and copy it to buffer
+			sprintf(TempStringBuffer, "%s\\%s", InPath, FileDirectoryListing[i]);
+			fin = fopen(TempStringBuffer, "rb");
+			printf("Writing: %s @ 0x%x (size: 0x%x)\n", TempStringBuffer, FileEntry[i].FileOffset, PackerFileSizes[i]);
+			if (!fin)
+			{
+				printf("ERROR: Can't open file %s for reading!\n", TempStringBuffer);
+				perror("ERROR");
+				return -1;
+			}
+			FileBuffer = malloc(PackerFileSizes[i]);
+			fread(FileBuffer, PackerFileSizes[i], 1, fin);
+			fclose(fin);
 
-		// cutin anim pointer check
-		if (bHasAnimPtrs && strcmp(FileDirectoryListing[i], "all-ptrs.txt") == 0)
-			AnimPtrsOffset = FileEntry[i].FileOffset;
-		if (bHasAnimEtcPtrs && strcmp(FileDirectoryListing[i], "alletc-ptrs.txt") == 0)
-			AnimEtcPtrsOffset = FileEntry[i].FileOffset;
+			// seek to the correct spot in the file and write there
+			fseek(fout, FileEntry[i].FileOffset, SEEK_SET);
+			fwrite(FileBuffer, PackerFileSizes[i], 1, fout);
+			free(FileBuffer);
+		}
 
-		// cutin other pointer check
-		if (!bHasInfoPtrs && strcmp(FileDirectoryListing[i], "_info-ptrs.txt") == 0)
+		if (!bOfficial) // we don't care about the custom ptrs format in official mode
 		{
-			bHasInfoPtrs = true;
-			InfoPtrsIndex = i;
-		}
-		if (!bHasKaoPtrs && strcmp(FileDirectoryListing[i], "_kao-ptrs.txt") == 0)
-		{
-			bHasKaoPtrs = true;
-			KaoPtrsIndex = i;
-		}
-		if (!bHasFilenamePtrs && strcmp(FileDirectoryListing[i], TempStringBuffer2) == 0)
-		{
-			bHasFilenamePtrs = true;
-			FilenamePtrsIndex = i;
-		}
-		if (!bHasFilenameEtcPtrs && strcmp(FileDirectoryListing[i], TempStringBuffer3) == 0)
-		{
-			bHasFilenameEtcPtrs = true;
-			FilenameEtcPtrsIndex = i;
+			// cutin anim pointer check
+			if (bHasAnimPtrs && strcmp(FileDirectoryListing[i], "all-ptrs.txt") == 0)
+				AnimPtrsOffset = FileEntry[i].FileOffset;
+			if (bHasAnimEtcPtrs && strcmp(FileDirectoryListing[i], "alletc-ptrs.txt") == 0)
+				AnimEtcPtrsOffset = FileEntry[i].FileOffset;
+
+			// cutin other pointer check
+			if (!bHasInfoPtrs && strcmp(FileDirectoryListing[i], "_info-ptrs.txt") == 0)
+			{
+				bHasInfoPtrs = true;
+				InfoPtrsIndex = i;
+			}
+			if (!bHasKaoPtrs && strcmp(FileDirectoryListing[i], "_kao-ptrs.txt") == 0)
+			{
+				bHasKaoPtrs = true;
+				KaoPtrsIndex = i;
+			}
+			if (!bHasFilenamePtrs && strcmp(FileDirectoryListing[i], TempStringBuffer2) == 0)
+			{
+				bHasFilenamePtrs = true;
+				FilenamePtrsIndex = i;
+			}
+			if (!bHasFilenameEtcPtrs && strcmp(FileDirectoryListing[i], TempStringBuffer3) == 0)
+			{
+				bHasFilenameEtcPtrs = true;
+				FilenameEtcPtrsIndex = i;
+			}
 		}
 	}
 
-	// lastly add alignment bytes to the end to make it aligned by 0x10
+	// lastly add alignment bytes to the end to make it sector aligned by 0x10
 	if (ftell(fout) & 0xF)
 	{
 		AlignmentBytes = (ftell(fout) + 0x10) & 0xFFFFFFF0;
@@ -467,7 +528,7 @@ int EHPCutin_UpdateKaoPtrs(const char* OutFilename)
 	return 0;
 }
 
-int EHPAnimReference(const char* OutFilename, const char* InPtrsFile, bool bIsEtc)
+int EHPAnimReference(const char* OutFilename, const char* InFolder, const char* InPtrsFile, bool bIsEtc)
 {
 	FILE* fout = fopen(OutFilename, "rb+");
 	FILE* fptrs = fopen(InPtrsFile, "rb");
@@ -531,8 +592,7 @@ int EHPAnimReference(const char* OutFilename, const char* InPtrsFile, bool bIsEt
 
 
 			// before searching the EHP, check if the file even exists!
-			strcpy(FileNameBuffer, OutFilename);
-			*strrchr(FileNameBuffer, '.') = 0;
+			strcpy(FileNameBuffer, InFolder);
 			sprintf(TempStringBuffer, "%s\\%s", FileNameBuffer, TempStringBuffer2);
 			if (stat(TempStringBuffer, &st))
 			{
@@ -679,7 +739,153 @@ int EHPDereference(const char* InFilename, const char* InPtrsFile, const char* O
 	return 0;
 }
 
-int EHPExtract(const char* InFilename, const char* OutPath)
+// Update EhFolder ptrs.txt files in an EHP/EhFolder
+int EhFolder_UpdatePtrs(const char* InFolder, const char* OutFilename)
+{
+	FILE* fin = NULL;
+	FILE* fout = fopen(OutFilename, "rb+");
+	unsigned int* PtrsFileBuffer = NULL;
+	unsigned int PtrsCount = 0;
+
+	if (!fout)
+	{
+		printf("ERROR: Can't open file %s for reading + writing!\n", OutFilename);
+		perror("ERROR");
+		return -1;
+	}
+
+	for (unsigned int i = 0; i < MainHeader.FileCount; i++)
+	{
+		if (strstr(FileDirectoryListing[i], "-ptrs.txt"))
+		{
+			sprintf(TempStringBuffer2, "%s\\%s", InFolder, FileDirectoryListing[i]);
+			printf("Updating ptrs: %s\n", TempStringBuffer2);
+			fin = fopen(TempStringBuffer2, "r");
+			if (!fin)
+			{
+				printf("ERROR: Can't open file %s for reading!\n", TempStringBuffer2);
+				perror("ERROR");
+				return -1;
+			}
+
+			PtrsCount = PackerFileSizes[i] / 4;
+			PtrsFileBuffer = (unsigned int*)malloc(PackerFileSizes[i]);
+
+			for (unsigned int j = 0; j < PtrsCount; j++)
+			{
+				fgets(TempStringBuffer3, 1024, fin);
+				if (TempStringBuffer3[strlen(TempStringBuffer3) - 2] == '\r')
+					TempStringBuffer3[strlen(TempStringBuffer3) - 2] = 0;
+				else if (TempStringBuffer3[strlen(TempStringBuffer3) - 1] == '\n')
+					TempStringBuffer3[strlen(TempStringBuffer3) - 1] = 0;
+
+				if (strcmp(TempStringBuffer3, "END") == 0)
+				{
+					PtrsFileBuffer[j] = 0xFFFFFFFF;
+					break;
+				}
+				else if (strcmp(TempStringBuffer3, "NULL") == 0)
+					PtrsFileBuffer[j] = 0;
+				else
+				{
+					for (unsigned int k = 0; k < MainHeader.FileCount; k++)
+					{
+						if (strcmp(TempStringBuffer3, FileDirectoryListing[k]) == 0)
+						{
+							PtrsFileBuffer[j] = FileEntry[k].FileOffset;
+							break;
+						}
+					}
+				}
+
+			}
+			fclose(fin);
+			
+			fseek(fout, FileEntry[i].FileOffset, SEEK_SET);
+			fwrite(PtrsFileBuffer, PackerFileSizes[i], 1, fout);
+
+			free(PtrsFileBuffer);
+		}
+	}
+
+	fclose(fout);
+
+	return 0;
+}
+
+// Dereference EhFolder ptrs.txt files from an EHP/EhFolder
+int EhFolder_ReversePtrs(const char* InFolder)
+{
+	FILE* fin = NULL;
+	FILE* fout = NULL;
+	unsigned int* PtrsFileBuffer = NULL;
+	unsigned int PtrsCount = 0;
+	struct stat st = {0};
+
+	for (unsigned int i = 0; i < MainHeader.FileCount; i++)
+	{
+		if (strstr(FileDirectoryListing[i], "-ptrs.txt"))
+		{
+			sprintf(TempStringBuffer2, "%s\\%s", InFolder, FileDirectoryListing[i]);
+			printf("Dereferencing ptrs: %s\n", TempStringBuffer2);
+			fin = fopen(TempStringBuffer2, "rb");
+			if (!fin)
+			{
+				printf("ERROR: Can't open file %s for reading!\n", TempStringBuffer2);
+				perror("ERROR");
+				return -1;
+			}
+			if (stat(TempStringBuffer2, &st))
+			{
+				printf("ERROR: Can't find %s during size reading!\n", TempStringBuffer2);
+				fclose(fin);
+				return -1;
+			}
+			PtrsCount = st.st_size / 4;
+			PtrsFileBuffer = (unsigned int*)malloc(st.st_size);
+			fread(PtrsFileBuffer, st.st_size, 1, fin);
+			fclose(fin);
+			fout = fopen(TempStringBuffer2, "w");
+			if (!fin)
+			{
+				printf("ERROR: Can't open file %s for writing!\n", TempStringBuffer2);
+				perror("ERROR");
+				return -1;
+			}
+
+
+			for (unsigned int j = 0; j < PtrsCount; j++)
+			{
+				if (PtrsFileBuffer[j] == 0xFFFFFFFF)
+				{
+					fprintf(fout, "END\n");
+					break;
+				}
+				else if (!PtrsFileBuffer[j])
+					fprintf(fout, "NULL\n");
+				else
+				{
+					for (unsigned int k = 0; k < MainHeader.FileCount; k++)
+					{
+						if (FileEntry[k].FileOffset == PtrsFileBuffer[j])
+						{
+							fprintf(fout, "%s\n", FileDirectoryListing[k]);
+							break;
+						}
+					}
+				}
+			}
+			free(PtrsFileBuffer);
+			fclose(fout);
+
+			PtrsCount = 0;
+		}
+	}
+
+	return 0;
+}
+
+int EHPExtract(const char* InFilename, const char* OutPath, bool bOfficial)
 {
 	FILE *fin = fopen(InFilename, "rb");
 	FILE *fout = NULL;
@@ -711,6 +917,7 @@ int EHPExtract(const char* InFilename, const char* OutPath)
 
 	// read file entries
 	FileEntry = (EHPFileEntry*)calloc(MainHeader.FileCount, sizeof(EHPFileEntry));
+	FileDirectoryListing = (char**)calloc(MainHeader.FileCount, sizeof(char*));
 	fread(FileEntry, sizeof(EHPFileEntry), MainHeader.FileCount, fin);
 
 	// start file extraction
@@ -722,54 +929,57 @@ int EHPExtract(const char* InFilename, const char* OutPath)
 
 		// get filesize
 		FilenameSize = strlen(FileNameBuffer) + 1; 
+		FileDirectoryListing[i] = (char*)calloc(FilenameSize, sizeof(char));
 		fseek(fin, FileEntry[i].FileInfoPointer + FilenameSize, SEEK_SET); // go to the end of the string, there lies the filesize
 		fread(&FileSize, sizeof(int), 1, fin);
 
-		// detect cutin anim pointers file
-		if (strcmp(FileNameBuffer, "all-ptrs.txt") == 0)
+		if (!bOfficial)
 		{
-			printf("INFO: Will generate anim definition file!\n");
-			bHasAnimPtrs = true;
-			AnimPtrsSize = FileSize;
-
-			switch (FileSize)
+			// detect cutin anim pointers file
+			if (strcmp(FileNameBuffer, "all-ptrs.txt") == 0)
 			{
-			case TF6_ANIMPTRS_SIZE:
-				printf("INFO: Detected Tag Force 6!\n");
-				AnimPtrsMode = TF6_ANIMPTRS;
-				break;
-			case TF5_ANIMPTRS_SIZE:
-				printf("INFO: Detected Tag Force 5!\n");
-				AnimPtrsMode = TF5_ANIMPTRS;
-				break;
-			case TF4_ANIMPTRS_SIZE:
-				printf("INFO: Detected Tag Force 4!\n");
-				AnimPtrsMode = TF4_ANIMPTRS;
-				break;
-			case TF3_ANIMPTRS_SIZE:
-				printf("INFO: Detected Tag Force 3!\n");
-				AnimPtrsMode = TF3_ANIMPTRS;
-				break;
-			case TF2_ANIMPTRS_SIZE:
-				printf("INFO: Detected Tag Force 2!\n");
-				AnimPtrsMode = TF2_ANIMPTRS;
-				break;
-			case TF1_ANIMPTRS_SIZE:
-				printf("INFO: Detected Tag Force 1!\n");
-				AnimPtrsMode = TF1_ANIMPTRS;
-				break;
-			default:
-				printf("INFO: Anim-ptrs game unknown!\n");
-				break;
+				printf("INFO: Will generate anim definition file!\n");
+				bHasAnimPtrs = true;
+				AnimPtrsSize = FileSize;
+
+				switch (FileSize)
+				{
+				case TF6_ANIMPTRS_SIZE:
+					printf("INFO: Detected Tag Force 6!\n");
+					AnimPtrsMode = TF6_ANIMPTRS;
+					break;
+				case TF5_ANIMPTRS_SIZE:
+					printf("INFO: Detected Tag Force 5!\n");
+					AnimPtrsMode = TF5_ANIMPTRS;
+					break;
+				case TF4_ANIMPTRS_SIZE:
+					printf("INFO: Detected Tag Force 4!\n");
+					AnimPtrsMode = TF4_ANIMPTRS;
+					break;
+				case TF3_ANIMPTRS_SIZE:
+					printf("INFO: Detected Tag Force 3!\n");
+					AnimPtrsMode = TF3_ANIMPTRS;
+					break;
+				case TF2_ANIMPTRS_SIZE:
+					printf("INFO: Detected Tag Force 2!\n");
+					AnimPtrsMode = TF2_ANIMPTRS;
+					break;
+				case TF1_ANIMPTRS_SIZE:
+					printf("INFO: Detected Tag Force 1!\n");
+					AnimPtrsMode = TF1_ANIMPTRS;
+					break;
+				default:
+					printf("INFO: Anim-ptrs game unknown!\n");
+					break;
+				}
+			}
+
+			if (strcmp(FileNameBuffer, "alletc-ptrs.txt") == 0)
+			{
+				printf("INFO: Will generate anim-etc definition file!\n");
+				bHasAnimEtcPtrs = true;
 			}
 		}
-
-		if (strcmp(FileNameBuffer, "alletc-ptrs.txt") == 0)
-		{
-			printf("INFO: Will generate anim-etc definition file!\n");
-			bHasAnimEtcPtrs = true;
-		}
-
 
 		// create a buffer & copy the file to buffer
 		FileBuffer = malloc(FileSize);
@@ -785,6 +995,7 @@ int EHPExtract(const char* InFilename, const char* OutPath)
 		}
 
 		// write buffer to a new file at the output path
+		strcpy(FileDirectoryListing[i], FileNameBuffer);
 		sprintf(TempStringBuffer, "%s\\%s", OutPath, FileNameBuffer);
 		printf("Extracting: %s @ 0x%x (size 0x%x)\n", TempStringBuffer, FileEntry[i].FileOffset, FileSize);
 		fout = fopen(TempStringBuffer, "wb");
@@ -808,23 +1019,89 @@ int EHPExtract(const char* InFilename, const char* OutPath)
 	return 0;
 }
 
+
 int main(int argc, char *argv[])
 {
 	char* CharPatchPoint = NULL;
-	printf("Yu-Gi-Oh! Tag Force EHP Tool\n");
+	printf("Yu-Gi-Oh! Tag Force EHP/EhFolder Tool\n\n");
 
 
 	if (argc < 2)
 	{
 		printf("USAGE (extract): %s InFileName [OutFolder]\n", argv[0]);
 		printf("USAGE (pack): %s -p InFolder [OutFileName]\n", argv[0]);
-		printf("USAGE (dereference): %s -d InFileName InPtrsFile OutFileName\n", argv[0]);
-		printf("If the optional (in []) parameter isn't specified, it'll reuse the input name.\n");
+		printf("USAGE (extract (custom)): %s -c InFileName [OutFolder]\n", argv[0]);
+		printf("USAGE (pack (custom)): %s -pc InFolder [OutFileName]\n", argv[0]);
+		printf("\nIf the optional (in []) parameter isn't specified, it'll reuse the input name.\nCustom mode uses a custom format for ptrs files which is easier to edit, useful for porting models.\nNOTE: You can only repack custom mode files in custom packing mode if they used ptrs\n");
 		return -1;
 	}
 
 	if (argv[1][0] == '-' && argv[1][1] == 'p') // Pack mode
 	{
+
+		if (argv[1][2] == 'c')
+		{
+			printf("Packing (custom) mode\n");
+			if (argc == 3)
+			{
+				OutputFileName = (char*)calloc(strlen(argv[2]), sizeof(char) + 8);
+				strcpy(OutputFileName, argv[2]);
+				strcat(OutputFileName, ".ehp");
+			}
+			else
+				OutputFileName = argv[3];
+
+			strcpy(FileNameBuffer, argv[2]);
+			strcat(FileNameBuffer, "_anim-ptrs.txt");
+			if (!(stat(FileNameBuffer, &st)))
+			{
+				printf("Detected animation pointers!\n");
+				bHasAnimPtrs = true;
+			}
+
+			strcpy(FileNameBuffer, argv[2]);
+			strcat(FileNameBuffer, "_animetc-ptrs.txt");
+			if (!(stat(FileNameBuffer, &st)))
+			{
+				printf("Detected animation-etc pointers!\n");
+				bHasAnimEtcPtrs = true;
+			}
+			EHPPack(argv[2], OutputFileName, false);
+
+			if (bHasAnimPtrs)
+			{
+				printf("Writing animation pointers to EHP!\n");
+				strcpy(FileNameBuffer, argv[2]);
+				strcat(FileNameBuffer, "_anim-ptrs.txt");
+				EHPAnimReference(OutputFileName, argv[2], FileNameBuffer, false);
+			}
+
+			if (bHasAnimEtcPtrs)
+			{
+				printf("Writing animation-etc pointers to EHP!\n");
+				strcpy(FileNameBuffer, argv[2]);
+				strcat(FileNameBuffer, "_animetc-ptrs.txt");
+				EHPAnimReference(OutputFileName, argv[2],FileNameBuffer, true);
+			}
+
+			if (bHasInfoPtrs)
+			{
+				printf("Writing _info-ptrs.txt to EHP!\n");
+				EHPCutin_UpdateInfoPtrs(OutputFileName);
+			}
+
+			if (bHasKaoPtrs)
+			{
+				printf("Writing _kao-ptrs.txt to EHP!\n");
+				EHPCutin_UpdateKaoPtrs(OutputFileName);
+			}
+
+			// TODO: if neccessary, update the filename-ptrs.txt file too, it's used in TF1 only...
+
+			return 0;
+
+		}
+
 		printf("Packing mode\n");
 		if (argc == 3)
 		{
@@ -835,70 +1112,47 @@ int main(int argc, char *argv[])
 		else
 			OutputFileName = argv[3];
 
-		strcpy(FileNameBuffer, OutputFileName);
-		*strrchr(FileNameBuffer, '.') = 0;
-		strcat(FileNameBuffer, "_anim-ptrs.txt");
-		if (!(stat(FileNameBuffer, &st)))
-		{
-			printf("Detected animation pointers!\n");
-			bHasAnimPtrs = true;
-		}
+		EHPPack(argv[2], OutputFileName, true);
+		EhFolder_UpdatePtrs(argv[2], OutputFileName);
+		return 0;
+	}
 
-		strcpy(FileNameBuffer, OutputFileName);
-		*strrchr(FileNameBuffer, '.') = 0;
-		strcat(FileNameBuffer, "_animetc-ptrs.txt");
-		if (!(stat(FileNameBuffer, &st)))
+	if (argv[1][0] == '-' && argv[1][1] == 'c') // Extraction mode (official format)
+	{
+		printf("Extraction (custom) mode\n");
+		if (argc == 3)
 		{
-			printf("Detected animation-etc pointers!\n");
-			bHasAnimEtcPtrs = true;
+			char* PatchPoint;
+			OutputFileName = (char*)calloc(strlen(argv[2]), sizeof(char));
+			strcpy(OutputFileName, argv[2]);
+			PatchPoint = strrchr(OutputFileName, '.');
+			*PatchPoint = 0;
 		}
-		EHPPack(argv[2], OutputFileName);
+		else
+			OutputFileName = argv[3];
+
+		EHPExtract(argv[2], OutputFileName, false);
 
 		if (bHasAnimPtrs)
 		{
-			printf("Writing animation pointers to EHP!\n");
-			strcpy(FileNameBuffer, OutputFileName);
-			*strrchr(FileNameBuffer, '.') = 0;
-			strcat(FileNameBuffer, "_anim-ptrs.txt");
-			EHPAnimReference(OutputFileName, FileNameBuffer, false);
+			sprintf(TempStringBuffer, "%s\\%s", OutputFileName, "all-ptrs.txt");
+			sprintf(FileNameBuffer, "%s_anim-ptrs.txt", OutputFileName);
+			EHPDereference(argv[2], TempStringBuffer, FileNameBuffer);
 		}
 
 		if (bHasAnimEtcPtrs)
 		{
-			printf("Writing animation-etc pointers to EHP!\n");
-			strcpy(FileNameBuffer, OutputFileName);
-			*strrchr(FileNameBuffer, '.') = 0;
-			strcat(FileNameBuffer, "_animetc-ptrs.txt");
-			EHPAnimReference(OutputFileName, FileNameBuffer, true);
+			sprintf(TempStringBuffer, "%s\\%s", OutputFileName, "alletc-ptrs.txt");
+			sprintf(FileNameBuffer, "%s_animetc-ptrs.txt", OutputFileName);
+			EHPDereference(argv[2], TempStringBuffer, FileNameBuffer);
 		}
-
-		if (bHasInfoPtrs)
-		{
-			printf("Writing _info-ptrs.txt to EHP!\n");
-			EHPCutin_UpdateInfoPtrs(OutputFileName);
-		}
-
-		if (bHasKaoPtrs)
-		{
-			printf("Writing _kao-ptrs.txt to EHP!\n");
-			EHPCutin_UpdateKaoPtrs(OutputFileName);
-		}
-
-		// TODO: if neccessary, update the filename-ptrs.txt file too, it's used in TF1 only...
 
 		return 0;
 	}
 
-
-	if (argv[1][0] == '-' && argv[1][1] == 'd') // Dereference mode
+	printf("Extraction mode\n");
+	if (argc == 2)
 	{
-		printf("Dereference mode\n");
-		return EHPDereference(argv[2], argv[3], argv[4]);
-	}
-	
-	if (argc == 2) // Extraction mode
-	{
-		printf("Extraction mode\n");
 		char* PatchPoint;
 		OutputFileName = (char*)calloc(strlen(argv[1]), sizeof(char));
 		strcpy(OutputFileName, argv[1]);
@@ -908,20 +1162,8 @@ int main(int argc, char *argv[])
 	else
 		OutputFileName = argv[2];
 
-	EHPExtract(argv[1], OutputFileName);
-	if (bHasAnimPtrs)
-	{
-		sprintf(TempStringBuffer, "%s\\%s", OutputFileName, "all-ptrs.txt");
-		sprintf(FileNameBuffer, "%s_anim-ptrs.txt", OutputFileName);
-		EHPDereference(argv[1], TempStringBuffer, FileNameBuffer);
-	}
-
-	if (bHasAnimEtcPtrs)
-	{
-		sprintf(TempStringBuffer, "%s\\%s", OutputFileName, "alletc-ptrs.txt");
-		sprintf(FileNameBuffer, "%s_animetc-ptrs.txt", OutputFileName);
-		EHPDereference(argv[1], TempStringBuffer, FileNameBuffer);
-	}
+	EHPExtract(argv[1], OutputFileName, true);
+	EhFolder_ReversePtrs(OutputFileName);
 
 	return 0;
 }
