@@ -1,5 +1,5 @@
-# Yu-Gi-Oh! Tag Force EHP Archive Tool
-This utility is designed to accurately manipulate the EHP archives found in the PSP Yu-Gi-Oh! Tag Force games.
+# Yu-Gi-Oh! Tag Force EHP/EhFolder Archive Tool
+This utility is designed to accurately manipulate the EHP/EhFolder archives found in the PSP Yu-Gi-Oh! Tag Force games.
 
 Currently command line only.
 
@@ -8,7 +8,7 @@ Currently command line only.
 - Packing of a folder back to EHP fully compatible with the game
 
 # Compatibility
-Right now it was only tested with Tag Force 6 (packing and extracting) but it can also extract and repack files from all other Tag Force games.
+This tool should be 100% compatible with the official EhFolder specification and any Tag Force game.
 
 # Usage
 Extracting: `ehppack InFileName [OutFolder]`
