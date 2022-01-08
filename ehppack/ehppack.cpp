@@ -13,7 +13,7 @@
 #include <vector>
 #include <algorithm>
 
-#ifdef WIN32
+#if defined (_WIN32) || defined (_WIN64)
 #include <windows.h>
 #include <strsafe.h>
 #include <ctype.h>
