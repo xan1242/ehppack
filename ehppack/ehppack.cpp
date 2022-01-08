@@ -2,10 +2,12 @@
 // by Xan
 // TODO: add EhFolder include.txt support (file inclusion/linking through txt file)
 // TODO: ".efs" support? No idea what it is used for but the official tool supports it... It also requires efscrcmp.exe which we don't even have so there's that.
+// TODO: test with GNU C compiler...
 
 #include "stdafx.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 // C++
 #include <iostream>
@@ -24,16 +26,16 @@
 
 struct EHPHead
 {
-	int Magic; // 0x03504845 (EHP 0x3) - game checks only the first 3 bytes for the magic
-	int TotalFileSize;
-	int Magic2; // 0x20544F4E (NOT ) - this gets changed in memory to "BIND" when the file is in use
-	int FileCount;
+	int32_t Magic; // 0x03504845 (EHP 0x3) - game checks only the first 3 bytes for the magic
+	int32_t TotalFileSize;
+	int32_t Magic2; // 0x20544F4E (NOT ) - this gets changed in memory to "BIND" when the file is in use
+	int32_t FileCount;
 }MainHeader = { EHP_MAGIC, 0, EHP_MAGIC2, 0 };
 
 struct EHPFileEntry
 {
-	int FileInfoPointer;
-	int FileOffset; // absolute
+	int32_t FileInfoPointer;
+	int32_t FileOffset; // absolute
 }*FileEntry;
 
 char FileNameBuffer[1024];
@@ -48,7 +50,7 @@ struct stat st = { 0 };
 
 // pack mode stuff
 char** FileDirectoryListing;
-unsigned int* PackerFileSizes;
+int32_t* PackerFileSizes;
 
 // Cutin Model stuff
 // _kao-ptrs.txt = contains a pointer to the mini_bu GIM file in the EHP (only seen in TF1)
@@ -85,7 +87,7 @@ bool bHasAnimEtcPtrs = false;
 unsigned int AnimCount = 0;
 unsigned int AnimPtrsSize = 0;
 unsigned int AnimPtrsMode = UNK_ANIMPTRS;
-unsigned int* AnimPointers = NULL;
+int32_t* AnimPointers = NULL;
 unsigned int AnimPtrsOffset = 0;
 unsigned int AnimEtcPtrsOffset = 0;
 
@@ -218,7 +220,7 @@ DWORD GetDirectoryListing(const char* FolderPath) // platform specific code, usi
 
 	// then create a file list in an array, redo the code
 	FileDirectoryListing = (char**)calloc(MainHeader.FileCount, sizeof(char*));
-	PackerFileSizes = (unsigned int*)calloc(MainHeader.FileCount, sizeof(unsigned int*));
+	PackerFileSizes = (int32_t*)calloc(MainHeader.FileCount, sizeof(int32_t*));
 	
 	ffd = { 0 };
 	hFind = FindFirstFile(szDir, &ffd);
@@ -256,12 +258,12 @@ void GetDirectoryListing(const char* FolderPath)
 #endif
 
 // precalc and prepare file entries
-int PreCalcFinalSize(const char* InPath, bool bOfficial)
+int32_t PreCalcFinalSize(const char* InPath, bool bOfficial)
 {
-	int result = sizeof(EHPHead) + (sizeof(EHPFileEntry) * (MainHeader.FileCount + 1)) + (MainHeader.FileCount * sizeof(int)); // Main Header size + (entry * (count + null terminator)) + filesize integers
-	int FileInfoPoint = sizeof(EHPHead) + (sizeof(EHPFileEntry) * (MainHeader.FileCount + 1)); // Main Header size + (entry * (count + null terminator))
+	int32_t result = sizeof(EHPHead) + (sizeof(EHPFileEntry) * (MainHeader.FileCount + 1)) + (MainHeader.FileCount * sizeof(int32_t)); // Main Header size + (entry * (count + null terminator)) + filesize integers
+	int32_t FileInfoPoint = sizeof(EHPHead) + (sizeof(EHPFileEntry) * (MainHeader.FileCount + 1)); // Main Header size + (entry * (count + null terminator))
 
-	unsigned int AlignedFileStart;
+	int32_t AlignedFileStart;
 
 	char* PadNamePoint = NULL;
 	
@@ -290,7 +292,7 @@ int PreCalcFinalSize(const char* InPath, bool bOfficial)
 		// update file entry stuff immediately
 		FileEntry[i].FileInfoPointer = FileInfoPoint;
 		FileEntry[i].FileOffset = result;
-		FileInfoPoint += strlen(FileDirectoryListing[i]) + 1 + sizeof(int);
+		FileInfoPoint += strlen(FileDirectoryListing[i]) + 1 + sizeof(int32_t);
 
 
 		sprintf(TempStringBuffer, "%s\\%s", InPath, FileDirectoryListing[i]);
@@ -305,7 +307,7 @@ int PreCalcFinalSize(const char* InPath, bool bOfficial)
 			PadNamePoint = strchr(FileDirectoryListing[i], '#');
 
 		if (bOfficial && strstr(FileDirectoryListing[i], "-ptrs.txt")) // ptrs files get turned into binary files later
-			PackerFileSizes[i] = CountLinesInFile(TempStringBuffer) * sizeof(int);
+			PackerFileSizes[i] = CountLinesInFile(TempStringBuffer) * sizeof(int32_t);
 		else if (PadNamePoint) // txt files with # are padding files which in their name are followed by a size in hex format
 			sscanf(PadNamePoint, "#%x.txt", &PackerFileSizes[i]);
 		else
@@ -378,7 +380,7 @@ int EHPPack(const char* InPath, const char* OutFilename, bool bOfficial)
 		fwrite(FileDirectoryListing[i], sizeof(char), strlen(FileDirectoryListing[i]) + 1, fout);
 
 		// size
-		fwrite(&PackerFileSizes[i], sizeof(int), 1, fout);
+		fwrite(&PackerFileSizes[i], sizeof(int32_t), 1, fout);
 	}
 
 	// copy file data to the file
@@ -478,11 +480,11 @@ int EHPCutin_UpdateInfoPtrs(const char* OutFilename)
 		{
 			bFoundTMSFile = true;
 			fseek(fout, FileEntry[InfoPtrsIndex].FileOffset, SEEK_SET);
-			fwrite(&FileEntry[i].FileOffset, sizeof(unsigned int), 1, fout);
+			fwrite(&FileEntry[i].FileOffset, sizeof(int32_t), 1, fout);
 			if (bHasFilenamePtrs)
-				fwrite(&FileEntry[FilenamePtrsIndex].FileOffset, sizeof(unsigned int), 1, fout);
+				fwrite(&FileEntry[FilenamePtrsIndex].FileOffset, sizeof(int32_t), 1, fout);
 			if (bHasFilenameEtcPtrs)
-				fwrite(&FileEntry[FilenameEtcPtrsIndex].FileOffset, sizeof(unsigned int), 1, fout);
+				fwrite(&FileEntry[FilenameEtcPtrsIndex].FileOffset, sizeof(int32_t), 1, fout);
 			break;
 		}
 	}
@@ -515,7 +517,7 @@ int EHPCutin_UpdateKaoPtrs(const char* OutFilename)
 		{
 			bFoundMiniBu = true;
 			fseek(fout, FileEntry[KaoPtrsIndex].FileOffset, SEEK_SET);
-			fwrite(&FileEntry[i].FileOffset, sizeof(unsigned int), 1, fout);
+			fwrite(&FileEntry[i].FileOffset, sizeof(int32_t), 1, fout);
 			break;
 		}
 	}
@@ -577,7 +579,7 @@ int EHPAnimReference(const char* OutFilename, const char* InFolder, const char* 
 	}
 	// init array
 	AnimCount = AnimPtrsSize / 4;
-	AnimPointers = (unsigned int*)calloc(AnimCount, sizeof(unsigned int));
+	AnimPointers = (int32_t*)calloc(AnimCount, sizeof(int32_t));
 	AnimPointers[AnimCount - 1] = 0xFFFFFFFF;
 
 	// get pointers
@@ -621,12 +623,12 @@ int EHPAnimReference(const char* OutFilename, const char* InFolder, const char* 
 	if (bIsEtc)
 	{
 		fseek(fout, AnimEtcPtrsOffset, SEEK_SET);
-		fwrite(AnimPointers, sizeof(unsigned int), AnimCount, fout);
+		fwrite(AnimPointers, sizeof(int32_t), AnimCount, fout);
 	}
 	else
 	{
 		fseek(fout, AnimPtrsOffset, SEEK_SET);
-		fwrite(AnimPointers, sizeof(unsigned int), AnimCount, fout);
+		fwrite(AnimPointers, sizeof(int32_t), AnimCount, fout);
 	}
 
 	free(AnimPointers);
@@ -643,7 +645,7 @@ int EHPDereference(const char* InFilename, const char* InPtrsFile, const char* O
 	FILE* fout = fopen(OutFilename, "wb");
 	//int ptrchk = 0;
 	//int counter = 1;
-	unsigned int* LocalAnimPointers = NULL;
+	int32_t* LocalAnimPointers = NULL;
 
 
 	if (!fin)
@@ -686,7 +688,7 @@ int EHPDereference(const char* InFilename, const char* InPtrsFile, const char* O
 		return -1;
 	}
 
-	LocalAnimPointers = (unsigned int*)malloc(st.st_size);
+	LocalAnimPointers = (int32_t*)malloc(st.st_size);
 	AnimCount = st.st_size / 4;
 
 	fread(LocalAnimPointers, sizeof(char), st.st_size, fptrs);
@@ -744,7 +746,7 @@ int EhFolder_UpdatePtrs(const char* InFolder, const char* OutFilename)
 {
 	FILE* fin = NULL;
 	FILE* fout = fopen(OutFilename, "rb+");
-	unsigned int* PtrsFileBuffer = NULL;
+	int32_t* PtrsFileBuffer = NULL;
 	unsigned int PtrsCount = 0;
 
 	if (!fout)
@@ -769,7 +771,7 @@ int EhFolder_UpdatePtrs(const char* InFolder, const char* OutFilename)
 			}
 
 			PtrsCount = PackerFileSizes[i] / 4;
-			PtrsFileBuffer = (unsigned int*)malloc(PackerFileSizes[i]);
+			PtrsFileBuffer = (int32_t*)malloc(PackerFileSizes[i]);
 
 			for (unsigned int j = 0; j < PtrsCount; j++)
 			{
@@ -818,7 +820,7 @@ int EhFolder_ReversePtrs(const char* InFolder)
 {
 	FILE* fin = NULL;
 	FILE* fout = NULL;
-	unsigned int* PtrsFileBuffer = NULL;
+	int32_t* PtrsFileBuffer = NULL;
 	unsigned int PtrsCount = 0;
 	struct stat st = {0};
 
@@ -842,7 +844,7 @@ int EhFolder_ReversePtrs(const char* InFolder)
 				return -1;
 			}
 			PtrsCount = st.st_size / 4;
-			PtrsFileBuffer = (unsigned int*)malloc(st.st_size);
+			PtrsFileBuffer = (int32_t*)malloc(st.st_size);
 			fread(PtrsFileBuffer, st.st_size, 1, fin);
 			fclose(fin);
 			fout = fopen(TempStringBuffer2, "w");
@@ -931,7 +933,7 @@ int EHPExtract(const char* InFilename, const char* OutPath, bool bOfficial)
 		FilenameSize = strlen(FileNameBuffer) + 1; 
 		FileDirectoryListing[i] = (char*)calloc(FilenameSize, sizeof(char));
 		fseek(fin, FileEntry[i].FileInfoPointer + FilenameSize, SEEK_SET); // go to the end of the string, there lies the filesize
-		fread(&FileSize, sizeof(int), 1, fin);
+		fread(&FileSize, sizeof(int32_t), 1, fin);
 
 		if (!bOfficial)
 		{
