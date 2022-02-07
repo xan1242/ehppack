@@ -18,3 +18,14 @@ Packing: `ehppack -p InFolder [OutFileName]`
 If the optional (in []) parameter isn't specified, it'll reuse the input name.
 
 You may also drag and drop an EHP to the binary to extract a file if you're on a supported OS.
+
+# Building with CMake
+Use the standard CMake building procedure:
+```bash
+$ mkdir bin
+$ cd bin
+$ cmake ..
+$ cmake --build .
+```
+
+And to install, just do: `# cmake --install .`

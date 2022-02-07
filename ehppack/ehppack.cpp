@@ -2,9 +2,19 @@
 // by Xan
 // TODO: add EhFolder include.txt support (file inclusion/linking through txt file)
 // TODO: ".efs" support? No idea what it is used for but the official tool supports it... It also requires efscrcmp.exe which we don't even have so there's that.
-// TODO: test with GNU C compiler...
 
+#if defined (_WIN32) || defined (_WIN64)
 #include "stdafx.h"
+#endif
+
+
+#if __GNUC__
+#include <sys/stat.h>
+#include <dirent.h>
+#define path_separator "/"
+#endif
+
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -14,12 +24,6 @@
 #include <string>
 #include <vector>
 #include <algorithm>
-
-#if defined (_WIN32) || defined (_WIN64)
-#include <windows.h>
-#include <strsafe.h>
-#include <ctype.h>
-#endif
 
 #define EHP_MAGIC 0x03504845
 #define EHP_MAGIC2 0x20544F4E
@@ -176,7 +180,7 @@ unsigned int CountLinesInFile(const char* InFilename)
 }
 
 #ifdef WIN32
-DWORD GetDirectoryListing(const char* FolderPath) // platform specific code, using Win32 here, GNU requires use of dirent which MSVC doesn't have -- TODO - make crossplat variant
+DWORD GetDirectoryListing(const char* FolderPath)
 {
 	WIN32_FIND_DATA ffd = { 0 };
 	TCHAR  szDir[MAX_PATH];
@@ -251,10 +255,42 @@ DWORD GetDirectoryListing(const char* FolderPath) // platform specific code, usi
 	return dwError;
 }
 #else
+
+#if __GNUC__
 void GetDirectoryListing(const char* FolderPath)
 {
-	printf("Directory listing unimplemented for non-Win32 platforms.\n");
+	struct dirent *dp;
+	DIR *dir = opendir(FolderPath);
+    unsigned int NameCounter = 0;
+
+    // count the files up first
+    while ((dp=readdir(dir)))
+    {
+        // ignore the current and previous dir files...
+        if (!((strcmp(dp->d_name, ".") == 0) || (strcmp(dp->d_name, "..") == 0)))
+            MainHeader.FileCount++;
+    }
+    closedir(dir);
+
+    // then create a file list in an array, redo the code
+    FileDirectoryListing = (char**)calloc(MainHeader.FileCount, sizeof(char*));
+	PackerFileSizes = (int32_t*)calloc(MainHeader.FileCount, sizeof(int32_t*));
+
+    dir = opendir(FolderPath);
+    while ((dp=readdir(dir)))
+    {
+        // ignore the current and previous dir files...
+        if (!((strcmp(dp->d_name, ".") == 0) || (strcmp(dp->d_name, "..") == 0)))
+        {
+		    FileDirectoryListing[NameCounter] = (char*)calloc(strlen(dp->d_name) + 1, sizeof(char));
+		    strcpy(FileDirectoryListing[NameCounter], dp->d_name);
+		    NameCounter++;
+        }
+    }
+    closedir(dir);
 }
+#endif
+
 #endif
 
 // precalc and prepare file entries
@@ -295,7 +331,7 @@ int32_t PreCalcFinalSize(const char* InPath, bool bOfficial)
 		FileInfoPoint += strlen(FileDirectoryListing[i]) + 1 + sizeof(int32_t);
 
 
-		sprintf(TempStringBuffer, "%s\\%s", InPath, FileDirectoryListing[i]);
+		sprintf(TempStringBuffer, "%s%s%s", InPath, path_separator, FileDirectoryListing[i]);
 
 		if (stat(TempStringBuffer, &st))
 		{
@@ -392,7 +428,7 @@ int EHPPack(const char* InPath, const char* OutFilename, bool bOfficial)
 		if (!(bOfficial && (strstr(FileDirectoryListing[i], "-ptrs.txt")) || strchr(FileDirectoryListing[i], '#'))) // skip writing ptrs file and update it later, also skip padding files entirely
 		{
 			// open the file and copy it to buffer
-			sprintf(TempStringBuffer, "%s\\%s", InPath, FileDirectoryListing[i]);
+			sprintf(TempStringBuffer, "%s%s%s", InPath, path_separator, FileDirectoryListing[i]);
 			fin = fopen(TempStringBuffer, "rb");
 			printf("Writing: %s @ 0x%x (size: 0x%x)\n", TempStringBuffer, FileEntry[i].FileOffset, PackerFileSizes[i]);
 			if (!fin)
@@ -595,7 +631,7 @@ int EHPAnimReference(const char* OutFilename, const char* InFolder, const char* 
 
 			// before searching the EHP, check if the file even exists!
 			strcpy(FileNameBuffer, InFolder);
-			sprintf(TempStringBuffer, "%s\\%s", FileNameBuffer, TempStringBuffer2);
+			sprintf(TempStringBuffer, "%s%s%s", FileNameBuffer, path_separator, TempStringBuffer2);
 			if (stat(TempStringBuffer, &st))
 			{
 				printf("ERROR: Can't find %s during animation referencing!\n", TempStringBuffer);
@@ -760,7 +796,7 @@ int EhFolder_UpdatePtrs(const char* InFolder, const char* OutFilename)
 	{
 		if (strstr(FileDirectoryListing[i], "-ptrs.txt"))
 		{
-			sprintf(TempStringBuffer2, "%s\\%s", InFolder, FileDirectoryListing[i]);
+			sprintf(TempStringBuffer2, "%s%s%s", InFolder, path_separator, FileDirectoryListing[i]);
 			printf("Updating ptrs: %s\n", TempStringBuffer2);
 			fin = fopen(TempStringBuffer2, "r");
 			if (!fin)
@@ -822,13 +858,12 @@ int EhFolder_ReversePtrs(const char* InFolder)
 	FILE* fout = NULL;
 	int32_t* PtrsFileBuffer = NULL;
 	unsigned int PtrsCount = 0;
-	struct stat st = {0};
 
 	for (unsigned int i = 0; i < MainHeader.FileCount; i++)
 	{
 		if (strstr(FileDirectoryListing[i], "-ptrs.txt"))
 		{
-			sprintf(TempStringBuffer2, "%s\\%s", InFolder, FileDirectoryListing[i]);
+			sprintf(TempStringBuffer2, "%s%s%s", InFolder, path_separator, FileDirectoryListing[i]);
 			printf("Dereferencing ptrs: %s\n", TempStringBuffer2);
 			fin = fopen(TempStringBuffer2, "rb");
 			if (!fin)
@@ -992,13 +1027,22 @@ int EHPExtract(const char* InFilename, const char* OutPath, bool bOfficial)
 		if (stat(OutPath, &st))
 		{
 			printf("Creating folder: %s\n", OutPath);
-			mbstowcs(MkDirPath, OutPath, 1024);
+			
+			#if defined (_WIN32) || defined (_WIN64)
+            mbstowcs(MkDirPath, OutPath, 1024);
 			_wmkdir(MkDirPath);
+			#else
+
+            #if __GNUC__
+			mkdir(OutPath, 0755); // we don't have wide chars in this environment (at least this way) so we won't use wmkdir here...
+            #endif
+
+			#endif
 		}
 
 		// write buffer to a new file at the output path
 		strcpy(FileDirectoryListing[i], FileNameBuffer);
-		sprintf(TempStringBuffer, "%s\\%s", OutPath, FileNameBuffer);
+		sprintf(TempStringBuffer, "%s%s%s", OutPath, path_separator, FileNameBuffer);
 		printf("Extracting: %s @ 0x%x (size 0x%x)\n", TempStringBuffer, FileEntry[i].FileOffset, FileSize);
 		fout = fopen(TempStringBuffer, "wb");
 		if (!fout)
@@ -1137,14 +1181,14 @@ int main(int argc, char *argv[])
 
 		if (bHasAnimPtrs)
 		{
-			sprintf(TempStringBuffer, "%s\\%s", OutputFileName, "all-ptrs.txt");
+			sprintf(TempStringBuffer, "%s%s%s", OutputFileName, path_separator, "all-ptrs.txt");
 			sprintf(FileNameBuffer, "%s_anim-ptrs.txt", OutputFileName);
 			EHPDereference(argv[2], TempStringBuffer, FileNameBuffer);
 		}
 
 		if (bHasAnimEtcPtrs)
 		{
-			sprintf(TempStringBuffer, "%s\\%s", OutputFileName, "alletc-ptrs.txt");
+			sprintf(TempStringBuffer, "%s%s%s", OutputFileName, path_separator, "alletc-ptrs.txt");
 			sprintf(FileNameBuffer, "%s_animetc-ptrs.txt", OutputFileName);
 			EHPDereference(argv[2], TempStringBuffer, FileNameBuffer);
 		}
@@ -1169,4 +1213,3 @@ int main(int argc, char *argv[])
 
 	return 0;
 }
-
