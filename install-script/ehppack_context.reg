@@ -13,5 +13,5 @@ Windows Registry Editor Version 5.00
 "NoWorkingDirectory"=""
 
 [HKEY_CLASSES_ROOT\Directory\shell\ehppack\command]
-@="cmd.exe /c ehppack -p %1"
+@="cmd.exe /c ehppack -p \"%1\""
 "IsolatedCommand"="cmd.exe /c ehppack -p \"%1\""
