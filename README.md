@@ -33,7 +33,7 @@ Simply do the following:
 
 - Run `install.bat` as Administrator once (or run `install.ps1` directly with the `Bypass` ExecutionPolicy)
 
-In case you have UAC virtualization enabled, you may run into issues. Please run `install-noreg.bat` in that case instead and import the `ehppack_context.reg` key manually.
+In case you have UAC virtualization enabled, you may run into issues. Please run `install-noreg.bat` in that case instead and import the `ehppack_context.reg` key manually (usually by double clicking on it).
 
 
 
