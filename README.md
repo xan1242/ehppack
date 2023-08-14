@@ -47,9 +47,9 @@ The install script installs the binary into `%APPDATA%\ehppack` and adds it to y
 
 Running as Administrator is necessary to write in these registry keys (and subkeys inside):
 
-`HKEY_CLASSES_ROOT\.ehp\shell\ehppack`
+`HKEY_CURRENT_USER\Software\Classes\.ehp\shell\ehppack`
 
-`HKEY_CLASSES_ROOT\Directory\shell\ehppack`
+`HKEY_CURRENT_USER\Software\Classes\Directory\shell\ehppack`
 
 # Building with CMake
 
