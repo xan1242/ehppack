@@ -1,0 +1,17 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CLASSES_ROOT\.ehp\shell\ehppack]
+@="Extract with EhpPack"
+"NoWorkingDirectory"=""
+
+[HKEY_CLASSES_ROOT\.ehp\shell\ehppack\command]
+@="cmd.exe /c ehppack \"%1\""
+"IsolatedCommand"="cmd.exe /c ehppack \"%1\""
+
+[HKEY_CLASSES_ROOT\Directory\shell\ehppack]
+@="Pack folder with EhpPack"
+"NoWorkingDirectory"=""
+
+[HKEY_CLASSES_ROOT\Directory\shell\ehppack\command]
+@="cmd.exe /c ehppack -p %1"
+"IsolatedCommand"="cmd.exe /c ehppack -p \"%1\""

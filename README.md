@@ -33,6 +33,10 @@ Simply do the following:
 
 - Run `install.bat` as Administrator once (or run `install.ps1` directly with the `Bypass` ExecutionPolicy)
 
+In case you have UAC virtualization enabled, you may run into issues. Please run `install-noreg.bat` in that case instead and import the `ehppack_context.reg` key manually.
+
+
+
 You may need to log out and back in for it to work properly.
 
 The context menu will appear for all `.ehp` files (for unpacking) and all directories (for packing).
@@ -46,8 +50,6 @@ Running as Administrator is necessary to write in these registry keys (and subke
 `HKEY_CLASSES_ROOT\.ehp\shell\ehppack`
 
 `HKEY_CLASSES_ROOT\Directory\shell\ehppack`
-
-
 
 # Building with CMake
 
