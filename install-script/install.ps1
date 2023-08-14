@@ -40,14 +40,14 @@ function CreateOrUpdateRegistryKey($keyPath, $valueName, $valueData) {
 }
 
 # Step 4: Create or update registry keys with escaped quotes around %1
-$ehppackKeyPath = "Registry::HKEY_CLASSES_ROOT\.ehp\shell\ehppack"
+$ehppackKeyPath = "Registry::HKEY_CURRENT_USER\Software\Classes\.ehp\shell\ehppack"
 CreateOrUpdateRegistryKey $ehppackKeyPath "(default)" "Extract with EhpPack"
 CreateOrUpdateRegistryKey $ehppackKeyPath "NoWorkingDirectory" ""
 CreateOrUpdateRegistryKey "$ehppackKeyPath\command" "(default)" "cmd.exe /c ehppack `"%1`""
 CreateOrUpdateRegistryKey "$ehppackKeyPath\command" "IsolatedCommand" "cmd.exe /c ehppack `"%1`""
 
 # Step 5: Create or update registry keys for folders with escaped quotes around %1
-$directoryKeyPath = "Registry::HKEY_CLASSES_ROOT\Directory\shell\ehppack"
+$directoryKeyPath = "Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\ehppack"
 CreateOrUpdateRegistryKey $directoryKeyPath "(default)" "Pack folder with EhpPack"
 CreateOrUpdateRegistryKey $directoryKeyPath "NoWorkingDirectory" ""
 CreateOrUpdateRegistryKey "$directoryKeyPath\command" "(default)" "cmd.exe /c ehppack -p `"%1`""
